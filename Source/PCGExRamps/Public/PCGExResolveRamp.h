@@ -20,6 +20,16 @@ enum class EPCGExRampSource : uint8
 	AttributeSet = 1 UMETA(DisplayName = "Attribute Set"),
 };
 
+/** How the optional Min/Max Value pins derive their extremes. */
+UENUM(BlueprintType)
+enum class EPCGExRampValueRange : uint8
+{
+	/** Min/max of the key values. Exact for linear/constant ramps; ignores cubic overshoot between keys. */
+	FromKeys = 0 UMETA(DisplayName = "From Keys"),
+	/** Sample the evaluated curve across its domain to capture cubic overshoot/undershoot between keys. */
+	Sampled = 1 UMETA(DisplayName = "Sampled"),
+};
+
 /**
  * Resolve Ramp. Pure consumer: reads one input attribute set, materializes a transient UCurveFloat,
  * and outputs its soft object path so native PCG nodes taking a TSoftObjectPtr<UCurveFloat> can use
@@ -61,7 +71,7 @@ public:
 
 	virtual bool ShouldDrawNodeCompact() const override
 	{
-		return true;
+		return !bOutputMinValue && !bOutputMaxValue && !bOutputMinPos && !bOutputMaxPos;
 	}
 	
 	virtual bool GetCompactNodeIcon(FName& OutCompactNodeIcon) const override;
@@ -86,6 +96,49 @@ public:
 	/** Name of the output FSoftObjectPath attribute carrying the resolved curve path. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Settings")
 	FName OutputAttributeName = FName(TEXT("Curve"));
+
+	// Opt-in bounds outputs. Each enabled toggle adds its own double-typed output pin describing the
+	// resolved curve's bounding box: value pins = Y range, position pins = X (time) range.
+
+	/** Output the curve's minimum value (Y) on a dedicated Min Value pin. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Settings", meta = (InlineEditConditionToggle))
+	bool bOutputMinValue = false;
+
+	/** Attribute name carrying the minimum value on the Min Value pin. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Settings", meta = (EditCondition = "bOutputMinValue"))
+	FName MinValueAttributeName = FName(TEXT("MinValue"));
+
+	/** Output the curve's maximum value (Y) on a dedicated Max Value pin. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Settings", meta = (InlineEditConditionToggle))
+	bool bOutputMaxValue = false;
+
+	/** Attribute name carrying the maximum value on the Max Value pin. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Settings", meta = (EditCondition = "bOutputMaxValue"))
+	FName MaxValueAttributeName = FName(TEXT("MaxValue"));
+
+	/** Output the curve's minimum position (X / time) on a dedicated Min Pos pin. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Settings", meta = (InlineEditConditionToggle))
+	bool bOutputMinPos = false;
+
+	/** Attribute name carrying the minimum position on the Min Pos pin. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Settings", meta = (EditCondition = "bOutputMinPos"))
+	FName MinPosAttributeName = FName(TEXT("MinPos"));
+
+	/** Output the curve's maximum position (X / time) on a dedicated Max Pos pin. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Settings", meta = (InlineEditConditionToggle))
+	bool bOutputMaxPos = false;
+
+	/** Attribute name carrying the maximum position on the Max Pos pin. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Settings", meta = (EditCondition = "bOutputMaxPos"))
+	FName MaxPosAttributeName = FName(TEXT("MaxPos"));
+
+	/** How the Min/Max Value pins derive their extremes (position pins always use the key time range). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Settings", meta = (EditCondition = "bOutputMinValue || bOutputMaxValue", EditConditionHides))
+	EPCGExRampValueRange ValueRangeMode = EPCGExRampValueRange::FromKeys;
+
+	/** Sampled mode: number of evaluation samples across the curve domain (more = finer overshoot capture). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Settings", meta = (EditCondition = "(bOutputMinValue || bOutputMaxValue) && ValueRangeMode == EPCGExRampValueRange::Sampled", EditConditionHides, ClampMin = "2"))
+	int32 ValueRangeSamples = 256;
 
 	//~ Begin UPCGSettings interface
 	// Non-cacheable so the managed-resource reuse/mark-used pass runs every generation.

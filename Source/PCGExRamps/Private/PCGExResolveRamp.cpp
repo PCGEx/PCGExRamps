@@ -21,6 +21,42 @@
 
 namespace PCGExResolveRamp
 {
+	// Output pin labels for the opt-in bounds pins. Shared by OutputPinProperties (declaration),
+	// GetCurrentPinTypesID (type tagging) and the element (data routing) -- keep them in one place.
+	const FName MinValuePinLabel = FName(TEXT("Min Value"));
+	const FName MaxValuePinLabel = FName(TEXT("Max Value"));
+	const FName MinPosPinLabel = FName(TEXT("Min Pos"));
+	const FName MaxPosPinLabel = FName(TEXT("Max Pos"));
+
+	/**
+	 * Min/max of the curve's evaluated values, sampling the domain to catch cubic overshoot/undershoot
+	 * that key values alone miss. Seeded from the key range so coarse sampling can never report a range
+	 * narrower than the keys themselves.
+	 */
+	void SampledValueRange(const FRichCurve& Curve, const int32 Samples, float& OutMin, float& OutMax)
+	{
+		Curve.GetValueRange(OutMin, OutMax);
+
+		float MinTime = 0.0f;
+		float MaxTime = 0.0f;
+		Curve.GetTimeRange(MinTime, MaxTime);
+
+		if (MaxTime <= MinTime || Samples < 2)
+		{
+			// Degenerate domain (single key or zero span): nothing to sample between -- keys are exact.
+			return;
+		}
+
+		const float Span = MaxTime - MinTime;
+		for (int32 i = 0; i < Samples; ++i)
+		{
+			const float Time = MinTime + Span * (static_cast<float>(i) / static_cast<float>(Samples - 1));
+			const float Value = Curve.Eval(Time);
+			OutMin = FMath::Min(OutMin, Value);
+			OutMax = FMath::Max(OutMax, Value);
+		}
+	}
+
 	/**
 	 * Find a managed ramp curve matching both CRC and exact config string (the string check rules out a
 	 * 32-bit CRC collision) and mark it reused so PCG keeps it this generation. Self-contained re-impl so
@@ -236,7 +272,17 @@ FPCGDataTypeIdentifier UPCGExResolveRampSettings::GetCurrentPinTypesID(const UPC
 {
 	if (InPin && InPin->IsOutputPin())
 	{
-		// Output always carries the resolved curve path.
+		const FName Label = InPin->Properties.Label;
+		if (Label == PCGExResolveRamp::MinValuePinLabel || Label == PCGExResolveRamp::MaxValuePinLabel ||
+			Label == PCGExResolveRamp::MinPosPinLabel || Label == PCGExResolveRamp::MaxPosPinLabel)
+		{
+			// Bounds pins each carry a single double.
+			FPCGDataTypeIdentifier Id = FPCGDataTypeInfoParam::AsId();
+			Id.CustomSubtype = static_cast<int32>(EPCGMetadataTypes::Double);
+			return Id;
+		}
+
+		// The main output pin carries the resolved curve path.
 		FPCGDataTypeIdentifier Id = FPCGDataTypeInfoParam::AsId();
 		Id.CustomSubtype = static_cast<int32>(EPCGMetadataTypes::SoftObjectPath);
 		return Id;
@@ -276,6 +322,37 @@ TArray<FPCGPinProperties> UPCGExResolveRampSettings::OutputPinProperties() const
 #if WITH_EDITOR
 	Out.Tooltip = NSLOCTEXT("PCGExRamps", "OutPinTooltip", "Attribute set carrying the resolved curve soft path under OutputAttributeName.");
 #endif
+
+	// Opt-in bounds pins -- present only when their toggle is enabled.
+	if (bOutputMinValue)
+	{
+		FPCGPinProperties& P = Pins.Emplace_GetRef(PCGExResolveRamp::MinValuePinLabel, EPCGDataType::Param);
+#if WITH_EDITOR
+		P.Tooltip = NSLOCTEXT("PCGExRamps", "MinValuePinTooltip", "The curve's minimum value (Y) as a double, under MinValueAttributeName.");
+#endif
+	}
+	if (bOutputMaxValue)
+	{
+		FPCGPinProperties& P = Pins.Emplace_GetRef(PCGExResolveRamp::MaxValuePinLabel, EPCGDataType::Param);
+#if WITH_EDITOR
+		P.Tooltip = NSLOCTEXT("PCGExRamps", "MaxValuePinTooltip", "The curve's maximum value (Y) as a double, under MaxValueAttributeName.");
+#endif
+	}
+	if (bOutputMinPos)
+	{
+		FPCGPinProperties& P = Pins.Emplace_GetRef(PCGExResolveRamp::MinPosPinLabel, EPCGDataType::Param);
+#if WITH_EDITOR
+		P.Tooltip = NSLOCTEXT("PCGExRamps", "MinPosPinTooltip", "The curve's minimum position (X / time) as a double, under MinPosAttributeName.");
+#endif
+	}
+	if (bOutputMaxPos)
+	{
+		FPCGPinProperties& P = Pins.Emplace_GetRef(PCGExResolveRamp::MaxPosPinLabel, EPCGDataType::Param);
+#if WITH_EDITOR
+		P.Tooltip = NSLOCTEXT("PCGExRamps", "MaxPosPinTooltip", "The curve's maximum position (X / time) as a double, under MaxPosAttributeName.");
+#endif
+	}
+
 	return Pins;
 }
 
@@ -369,6 +446,57 @@ bool FPCGExResolveRampElement::ExecuteInternal(FPCGContext* Context) const
 	FPCGTaggedData& Output = Context->OutputData.TaggedData.Emplace_GetRef();
 	Output.Data = OutData;
 	Output.Pin = PCGPinConstants::DefaultOutputLabel;
+
+	// Opt-in bounds pins. Bounds describe the curve itself, so they're independent of the managed-resource
+	// path above -- they're emitted whenever the config parses, even if no component anchored the curve.
+	const bool bAnyBounds = Settings->bOutputMinValue || Settings->bOutputMaxValue ||
+		Settings->bOutputMinPos || Settings->bOutputMaxPos;
+
+	if (bAnyBounds && !Config.IsEmpty())
+	{
+		FRichCurve BoundsCurve;
+		if (PCGExRampFormat::Parse(Config, BoundsCurve))
+		{
+			float MinTime = 0.0f;
+			float MaxTime = 0.0f;
+			BoundsCurve.GetTimeRange(MinTime, MaxTime);
+
+			float MinValue = 0.0f;
+			float MaxValue = 0.0f;
+			if (Settings->ValueRangeMode == EPCGExRampValueRange::Sampled)
+			{
+				PCGExResolveRamp::SampledValueRange(BoundsCurve, Settings->ValueRangeSamples, MinValue, MaxValue);
+			}
+			else
+			{
+				BoundsCurve.GetValueRange(MinValue, MaxValue);
+			}
+
+			// Emit one single-entry double param on the named pin.
+			auto EmitBound = [Context](const FName PinLabel, const FName AttrName, const double Value)
+			{
+				UPCGParamData* Data = FPCGContext::NewObject_AnyThread<UPCGParamData>(Context);
+				check(Data && Data->Metadata);
+
+				FPCGMetadataAttribute<double>* Attr = Data->Metadata->CreateAttribute<double>(
+					AttrName, 0.0, /*bAllowsInterpolation=*/false, /*bOverrideParent=*/false);
+				const int64 EntryKey = Data->Metadata->AddEntry();
+				if (Attr)
+				{
+					Attr->SetValue(EntryKey, Value);
+				}
+
+				FPCGTaggedData& Tagged = Context->OutputData.TaggedData.Emplace_GetRef();
+				Tagged.Data = Data;
+				Tagged.Pin = PinLabel;
+			};
+
+			if (Settings->bOutputMinValue) { EmitBound(PCGExResolveRamp::MinValuePinLabel, Settings->MinValueAttributeName, MinValue); }
+			if (Settings->bOutputMaxValue) { EmitBound(PCGExResolveRamp::MaxValuePinLabel, Settings->MaxValueAttributeName, MaxValue); }
+			if (Settings->bOutputMinPos) { EmitBound(PCGExResolveRamp::MinPosPinLabel, Settings->MinPosAttributeName, MinTime); }
+			if (Settings->bOutputMaxPos) { EmitBound(PCGExResolveRamp::MaxPosPinLabel, Settings->MaxPosAttributeName, MaxTime); }
+		}
+	}
 
 	return true;
 }
