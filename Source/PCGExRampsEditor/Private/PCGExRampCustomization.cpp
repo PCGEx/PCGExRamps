@@ -1,16 +1,20 @@
-// Copyright 2026 Timothé Lapetite and contributors
+// Copyright 2026 Timothe Lapetite and contributors
 // Released under the MIT license https://opensource.org/license/MIT/
 
 #include "PCGExRampCustomization.h"
 
 #include "DetailWidgetRow.h"
 #include "IDetailChildrenBuilder.h"
+#include "IPropertyUtilities.h"
 #include "PropertyHandle.h"
 #include "SCurveEditor.h"
 #include "Widgets/Layout/SBox.h"
 
 #include "PCGExRampFormat.h"
 #include "PCGExRampTypes.h"
+#include "PCGExRampsEditorSettings.h"
+#include "Widgets/PCGExRampEditController.h"
+#include "Widgets/SPCGExRampEditor.h"
 
 #define LOCTEXT_NAMESPACE "PCGExRampCustomization"
 
@@ -19,13 +23,67 @@ TSharedRef<IPropertyTypeCustomization> FPCGExRampCustomization::MakeInstance()
 	return MakeShared<FPCGExRampCustomization>();
 }
 
+FPCGExRampCustomization::~FPCGExRampCustomization()
+{
+	if (SettingsChangedHandle.IsValid() && UObjectInitialized())
+	{
+		GetMutableDefault<UPCGExRampsEditorSettings>()->OnSettingChanged().Remove(SettingsChangedHandle);
+	}
+}
+
 void FPCGExRampCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
 {
 	DataHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPCGExRamp, Data));
+	PropertyUtilities = CustomizationUtils.GetPropertyUtilities();
+
 	PullFromProperty();
 
-	// Owner is wired via SetCurveOwner() after construction. To swap to the modern Curve Editor panel
-	// (FCurveEditor / SCurveEditorPanel), this is the single place.
+	// Rebuild this panel if the editor-choice setting is toggled while it is open.
+	SettingsChangedHandle = GetMutableDefault<UPCGExRampsEditorSettings>()->OnSettingChanged().AddSP(
+		this, &FPCGExRampCustomization::HandleSettingsChanged);
+
+	// The editor is a full-width child row (WholeRowContent, built in CustomizeChildren). ShouldAutoExpand
+	// forces the struct open so the editor is always visible without a manual expand, while still getting
+	// the full row width a struct header's content-sized value column can't provide.
+	HeaderRow
+		.ShouldAutoExpand(true)
+		.NameContent()
+		[
+			PropertyHandle->CreatePropertyNameWidget()
+		];
+}
+
+void FPCGExRampCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils)
+{
+	// Full-width inline editor as the first child row. WholeRowContent gives the widget the entire row
+	// width, so the editor spans and adapts to the panel (no content-sized value column).
+	const bool bUseLegacy = UPCGExRampsEditorSettings::Get()->bUseLegacyCurveEditor;
+	const TSharedRef<SWidget> ValueWidget = bUseLegacy ? BuildLegacyEditor() : BuildRampEditor();
+
+	ChildBuilder.AddCustomRow(LOCTEXT("RampEditorRow", "Ramp Editor"))
+		.WholeRowContent()
+		[
+			ValueWidget
+		];
+
+	// Expose the raw string for inspection / copy-paste (editing it here doesn't live-refresh the
+	// curve widget until the panel rebuilds).
+	if (DataHandle.IsValid())
+	{
+		ChildBuilder.AddProperty(DataHandle.ToSharedRef());
+	}
+}
+
+TSharedRef<SWidget> FPCGExRampCustomization::BuildRampEditor()
+{
+	Controller = MakeShared<FPCGExRampEditController>(CurveData.ToSharedRef());
+	Controller->OnChanged.AddSP(this, &FPCGExRampCustomization::HandleRampChanged);
+	return SNew(SPCGExRampEditor, Controller.ToSharedRef());
+}
+
+TSharedRef<SWidget> FPCGExRampCustomization::BuildLegacyEditor()
+{
+	// To swap to the modern Curve Editor panel (FCurveEditor / SCurveEditorPanel), this is the place.
 	TSharedRef<SCurveEditor> Editor = SNew(SCurveEditor)
 		.ViewMinInput(0.0f)
 		.ViewMaxInput(1.0f)
@@ -37,50 +95,74 @@ void FPCGExRampCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> Proper
 	CurveWidget = Editor;
 	Editor->SetCurveOwner(this);
 
-	HeaderRow
-		.NameContent()
+	return SNew(SBox)
+		.HeightOverride(140.0f)
 		[
-			PropertyHandle->CreatePropertyNameWidget()
-		]
-		.ValueContent()
-		.MinDesiredWidth(320.0f)
-		[
-			SNew(SBox)
-			.HeightOverride(140.0f)
-			[
-				Editor
-			]
+			Editor
 		];
 }
 
-void FPCGExRampCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils)
+void FPCGExRampCustomization::HandleRampChanged(bool bInteractive)
 {
-	// Expose the raw string for inspection / copy-paste (editing it here doesn't live-refresh the
-	// curve widget until the panel rebuilds).
-	if (DataHandle.IsValid())
+	PushToProperty(bInteractive);
+}
+
+void FPCGExRampCustomization::HandleSettingsChanged(UObject* Object, FPropertyChangedEvent& Event)
+{
+	if (PropertyUtilities.IsValid())
 	{
-		ChildBuilder.AddProperty(DataHandle.ToSharedRef());
+		PropertyUtilities->ForceRefresh();
 	}
 }
 
 void FPCGExRampCustomization::PullFromProperty()
 {
 	FString Data;
-	if (DataHandle.IsValid() && DataHandle->GetValue(Data) == FPropertyAccess::Success)
+	if (DataHandle.IsValid()
+		&& DataHandle->GetValue(Data) == FPropertyAccess::Success
+		&& PCGExRampFormat::Parse(Data, *CurveData)
+		&& CurveData->Keys.Num() >= 2)
 	{
-		SourceData = Data;
-		PCGExRampFormat::Parse(Data, CurveData);
+		// Normalize to the editor's domain: clamp positions to [0,1] (monotonic, so key order is
+		// preserved). Reject non-finite / absurd values (e.g. data corrupted by the old drag bug).
+		bool bSane = true;
+		for (FRichCurveKey& Key : CurveData->Keys)
+		{
+			Key.Time = FMath::Clamp(Key.Time, 0.0f, 1.0f);
+			if (!FMath::IsFinite(Key.Value) || FMath::Abs(Key.Value) > 1.0e6f)
+			{
+				bSane = false;
+			}
+		}
+
+		if (bSane)
+		{
+			CurveData->AutoSetTangents();
+			SourceData = Data;
+			return;
+		}
 	}
+
+	// Empty / unreadable / malformed / corrupt payload: fall back to the default linear 0->1 ramp so the
+	// editor always shows a valid two-key ramp instead of a blank graph. SourceData stays empty so the
+	// first real edit writes the corrected payload through.
+	CurveData->Reset();
+	const FKeyHandle First = CurveData->AddKey(0.0f, 0.0f);
+	const FKeyHandle Last = CurveData->AddKey(1.0f, 1.0f);
+	CurveData->GetKey(First).InterpMode = RCIM_Linear;
+	CurveData->GetKey(Last).InterpMode = RCIM_Linear;
+	CurveData->AutoSetTangents();
+	SourceData.Reset();
 }
 
-void FPCGExRampCustomization::PushToProperty()
+void FPCGExRampCustomization::PushToProperty(bool bInteractive)
 {
 	if (!DataHandle.IsValid())
 	{
 		return;
 	}
 
-	const FString NewData = PCGExRampFormat::SerializeCurve(CurveData);
+	const FString NewData = PCGExRampFormat::SerializeCurve(*CurveData);
 
 	// If the working curve still matches what we loaded, keep the original string verbatim -- avoids
 	// formatting churn ("1" -> "1.0") and silently rewriting a LUT source into curve mode on a no-op
@@ -93,7 +175,7 @@ void FPCGExRampCustomization::PushToProperty()
 		return;
 	}
 
-	DataHandle->SetValue(NewData);
+	DataHandle->SetValue(NewData, bInteractive ? EPropertyValueSetFlags::InteractiveChange : EPropertyValueSetFlags::DefaultFlags);
 	SourceData = NewData;
 }
 
@@ -103,20 +185,20 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 TArray<FRichCurveEditInfoConst> FPCGExRampCustomization::GetCurves() const
 {
 	TArray<FRichCurveEditInfoConst> Curves;
-	Curves.Add(FRichCurveEditInfoConst(&CurveData, FName(TEXT("Ramp"))));
+	Curves.Add(FRichCurveEditInfoConst(CurveData.Get(), FName(TEXT("Ramp"))));
 	return Curves;
 }
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void FPCGExRampCustomization::GetCurves(TAdderReserverRef<FRichCurveEditInfoConst> Curves) const
 {
-	Curves.Add(FRichCurveEditInfoConst(&CurveData, FName(TEXT("Ramp"))));
+	Curves.Add(FRichCurveEditInfoConst(CurveData.Get(), FName(TEXT("Ramp"))));
 }
 
 TArray<FRichCurveEditInfo> FPCGExRampCustomization::GetCurves()
 {
 	TArray<FRichCurveEditInfo> Curves;
-	Curves.Add(FRichCurveEditInfo(&CurveData, FName(TEXT("Ramp"))));
+	Curves.Add(FRichCurveEditInfo(CurveData.Get(), FName(TEXT("Ramp"))));
 	return Curves;
 }
 
@@ -142,7 +224,7 @@ void FPCGExRampCustomization::OnCurveChanged(const TArray<FRichCurveEditInfo>& C
 
 bool FPCGExRampCustomization::IsValidCurve(FRichCurveEditInfo CurveInfo)
 {
-	return CurveInfo.CurveToEdit == &CurveData;
+	return CurveInfo.CurveToEdit == CurveData.Get();
 }
 
 #pragma endregion

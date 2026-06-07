@@ -23,9 +23,10 @@ public class PCGExRampsEditor : ModuleRules
 			"Slate",
 			"SlateCore",
 			"InputCore",
-			"UnrealEd",       // SCurveEditor + FCurveOwnerInterface live here
+			"UnrealEd",          // SCurveEditor + FCurveOwnerInterface live here
 			"EditorWidgets",
-			"PropertyEditor", // RegisterCustomPropertyTypeLayout
+			"PropertyEditor",    // RegisterCustomPropertyTypeLayout
+			"DeveloperSettings", // UPCGExRampsEditorSettings (UDeveloperSettings)
 		});
 	}
 }
