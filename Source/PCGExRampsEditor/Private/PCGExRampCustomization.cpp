@@ -164,19 +164,30 @@ void FPCGExRampCustomization::PushToProperty(bool bInteractive)
 
 	const FString NewData = PCGExRampFormat::SerializeCurve(*CurveData);
 
-	// If the working curve still matches what we loaded, keep the original string verbatim -- avoids
-	// formatting churn ("1" -> "1.0") and silently rewriting a LUT source into curve mode on a no-op
-	// edit. A genuine edit serializes differently and writes through as curve mode.
-	FRichCurve SourceCurve;
-	if (!SourceData.IsEmpty()
-		&& PCGExRampFormat::Parse(SourceData, SourceCurve)
-		&& PCGExRampFormat::SerializeCurve(SourceCurve) == NewData)
+	// The non-interactive push that ends a drag MUST write, even if NewData is unchanged: it is the
+	// finalizing SetValue that closes the property transaction the first interactive push opened (the
+	// engine begins one on the first InteractiveChange and only ends it on the finalizing call). Skipping
+	// it leaves the transaction open forever -- undo stops working and the PCG component never settles out
+	// of interactive regeneration, so generation appears to hang.
+	const bool bFinalizingInteractive = !bInteractive && bInteractiveEditActive;
+
+	if (!bFinalizingInteractive)
 	{
-		return;
+		// No-op guard: while the working curve still matches what we loaded, keep the original string
+		// verbatim -- avoids formatting churn ("1" -> "1.0") and silently rewriting a LUT source into
+		// curve mode on a no-op edit. A genuine edit serializes differently and writes through as curve mode.
+		FRichCurve SourceCurve;
+		if (!SourceData.IsEmpty()
+			&& PCGExRampFormat::Parse(SourceData, SourceCurve)
+			&& PCGExRampFormat::SerializeCurve(SourceCurve) == NewData)
+		{
+			return;
+		}
 	}
 
 	DataHandle->SetValue(NewData, bInteractive ? EPropertyValueSetFlags::InteractiveChange : EPropertyValueSetFlags::DefaultFlags);
 	SourceData = NewData;
+	bInteractiveEditActive = bInteractive;
 }
 
 #pragma region FCurveOwnerInterface

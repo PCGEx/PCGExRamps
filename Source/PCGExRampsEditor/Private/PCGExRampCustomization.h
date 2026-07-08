@@ -79,6 +79,12 @@ private:
 	/** String last loaded from the property; preserved verbatim while the working curve still matches it. */
 	FString SourceData;
 
+	/** True once an interactive SetValue has been pushed and not yet finalized. The closing non-interactive
+	 *  push must always write (even on an unchanged value) to end the property transaction the first
+	 *  interactive push opened -- otherwise undo stays broken and PCG never settles out of interactive
+	 *  regeneration. */
+	bool bInteractiveEditActive = false;
+
 	/** Transient working curve edited by either view (shared with the controller). */
 	TSharedPtr<FRichCurve> CurveData = MakeShared<FRichCurve>();
 
