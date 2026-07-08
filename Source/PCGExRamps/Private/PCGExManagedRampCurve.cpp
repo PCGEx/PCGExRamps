@@ -7,9 +7,15 @@
 
 bool UPCGExManagedRampCurve::Release(bool bHardRelease, TSet<TSoftObjectPtr<AActor>>& OutActorsToDelete)
 {
-	// Transient curve: nothing to persist, no actors to delete. Drop the reference for GC and return
-	// true so PCG removes this resource from the component's managed set.
-	Curve = nullptr;
-	Config.Reset();
-	return true;
+	// Honor the soft/hard release contract so the curve survives a regeneration and can be reused.
+	// PCG's start-of-generation cleanup calls Release(bHardRelease=false); a reusable resource must
+	// KEEP its state and return false there (the base marks it unused so the Resolve Ramp node can
+	// MarkAsReused it). Only a hard release -- the end-of-gen sweep of an un-reused resource via
+	// ReleaseIfUnused, or teardown -- drops the curve. No actors to delete either way.
+	if (bHardRelease)
+	{
+		Curve = nullptr;
+		Config.Reset();
+	}
+	return Super::Release(bHardRelease, OutActorsToDelete);
 }
