@@ -4,6 +4,7 @@
 #include "SPCGExRampKeyStrip.h"
 
 #include "PCGExRampEditController.h"
+#include "PCGExRampsEditorStyle.h"
 
 #include "Rendering/DrawElements.h"
 #include "Styling/CoreStyle.h"
@@ -111,7 +112,9 @@ int32 SPCGExRampKeyStrip::OnPaint(
 		FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 1, AllottedGeometry.ToPaintGeometry(), Line, ESlateDrawEffect::None, PCGExRampStripColors::Track, true, 1.0f);
 	}
 
-	// Gems.
+	// Gems. White SVG when supplied (tinted per selection below), else the built-in rectangle.
+	const FSlateBrush* SliderBrush = FPCGExRampsEditorStyle::GetSliderBrush();
+	const FSlateBrush* GemDrawBrush = SliderBrush ? SliderBrush : WhiteBrush;
 	const int32 GemLayer = LayerId + 2;
 	const float GemHeight = FMath::Max(Size.Y - 6.0f, 4.0f);
 	const float GemTop = (Size.Y - GemHeight) * 0.5f;
@@ -129,7 +132,7 @@ int32 SPCGExRampKeyStrip::OnPaint(
 		FSlateDrawElement::MakeBox(
 			OutDrawElements, GemLayer,
 			AllottedGeometry.ToPaintGeometry(FVector2D(GemWidth, GemHeight), FSlateLayoutTransform(FVector2D(CenterX - GemWidth * 0.5f, GemTop))),
-			WhiteBrush, ESlateDrawEffect::None, GemColor);
+			GemDrawBrush, ESlateDrawEffect::None, GemColor);
 	}
 
 	return GemLayer + 1;

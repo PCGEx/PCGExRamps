@@ -27,6 +27,7 @@ public class PCGExRampsEditor : ModuleRules
 			"EditorWidgets",
 			"PropertyEditor",    // RegisterCustomPropertyTypeLayout
 			"DeveloperSettings", // UPCGExRampsEditorSettings (UDeveloperSettings)
+			"Projects",          // IPluginManager -> plugin Resources dir for the Slate style
 		});
 	}
 }

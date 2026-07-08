@@ -4,6 +4,7 @@
 #include "SPCGExRampGraph.h"
 
 #include "PCGExRampEditController.h"
+#include "PCGExRampsEditorStyle.h"
 
 #include "Rendering/DrawElements.h"
 #include "Styling/CoreStyle.h"
@@ -16,6 +17,13 @@ namespace PCGExRampGraphColors
 	static constexpr FLinearColor Curve(0.9f, 0.9f, 0.95f, 1.0f);
 	static constexpr FLinearColor KeyNormal(0.8f, 0.8f, 0.85f, 1.0f);
 	static constexpr FLinearColor KeySelected(1.0f, 0.6f, 0.1f, 1.0f);
+	// Signed-area fill: the band between the curve and the value=0 baseline, so positive vs negative
+	// regions read at a glance.
+	static constexpr FLinearColor Fill(0.9f, 0.9f, 0.95f, 0.07f);
+	// Vertical drop-lines linking a graph key to its strip gem: faint for unselected, the selection
+	// colour (solid) for the selected key.
+	static constexpr FLinearColor ConnectorNormal(1.0f, 1.0f, 1.0f, 0.12f);
+	static constexpr FLinearColor ConnectorSelected(1.0f, 0.6f, 0.1f, 0.6f);
 }
 
 void SPCGExRampGraph::Construct(const FArguments& InArgs, const TSharedRef<FPCGExRampEditController>& InController)
@@ -134,8 +142,15 @@ int32 SPCGExRampGraph::OnPaint(
 		AllottedGeometry.ToPaintGeometry(),
 		WhiteBrush, ESlateDrawEffect::None, PCGExRampGraphColors::Background);
 
-	// Grid lines (vertical at quarters, horizontal at frame min / mid / max).
+	// Paint order, back to front: background, grid/border, signed-area fill, key->gem connectors, curve,
+	// key markers.
 	const int32 GridLayer = LayerId + 1;
+	const int32 FillLayer = LayerId + 2;
+	const int32 ConnectorLayer = LayerId + 3;
+	const int32 CurveLayer = LayerId + 4;
+	const int32 KeyLayer = LayerId + 5;
+
+	// Grid lines (vertical at quarters, horizontal at frame min / mid / max).
 	for (int32 i = 0; i <= 4; ++i)
 	{
 		const float X = TimeToLocalX(i * 0.25f, Size);
@@ -164,6 +179,10 @@ int32 SPCGExRampGraph::OnPaint(
 		FSlateDrawElement::MakeLines(OutDrawElements, GridLayer, AllottedGeometry.ToPaintGeometry(), Box, ESlateDrawEffect::None, PCGExRampGraphColors::Border, true, 1.0f);
 	}
 
+	// Zero baseline in local space, clamped to the plot so the fill still has a valid edge when value=0
+	// falls outside the framed range.
+	const float ZeroY = FMath::Clamp(ValueToLocalY(0.0f, Size), Top, Bottom);
+
 	// Evaluated curve, sampled across the whole visible frame (which may be wider than [0,1]) so the
 	// extrapolated tails and any out-of-range keys are drawn edge to edge.
 	const FRichCurve& RichCurve = Controller->GetCurve();
@@ -180,18 +199,61 @@ int32 SPCGExRampGraph::OnPaint(
 			const float V = RichCurve.Eval(T);
 			CurvePoints.Add(FVector2D(TimeToLocalX(T, Size), ValueToLocalY(V, Size)));
 		}
-		FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 2, AllottedGeometry.ToPaintGeometry(), CurvePoints, ESlateDrawEffect::None, PCGExRampGraphColors::Curve, true, 1.5f);
+
+		// Signed-area fill: one thin quad per sample segment, spanning between the curve and the zero
+		// baseline. Local-space boxes reuse the proven white-brush + tint path; a single MakeCustomVerts
+		// mesh would be the smoother-but-fiddlier upgrade if this ever needs it.
+		for (int32 i = 0; i < CurvePoints.Num() - 1; ++i)
+		{
+			const float X0 = CurvePoints[i].X;
+			const float BoxW = CurvePoints[i + 1].X - X0;
+			const float CurveY = (CurvePoints[i].Y + CurvePoints[i + 1].Y) * 0.5f;
+			const float BoxTop = FMath::Min(CurveY, ZeroY);
+			const float BoxH = FMath::Abs(CurveY - ZeroY);
+			if (BoxW > 0.0f && BoxH > 0.0f)
+			{
+				FSlateDrawElement::MakeBox(
+					OutDrawElements, FillLayer,
+					AllottedGeometry.ToPaintGeometry(FVector2D(BoxW, BoxH), FSlateLayoutTransform(FVector2D(X0, BoxTop))),
+					WhiteBrush, ESlateDrawEffect::None, PCGExRampGraphColors::Fill);
+			}
+		}
+
+		FSlateDrawElement::MakeLines(OutDrawElements, CurveLayer, AllottedGeometry.ToPaintGeometry(), CurvePoints, ESlateDrawEffect::None, PCGExRampGraphColors::Curve, true, 1.5f);
 	}
 
-	// Key markers.
-	const int32 KeyLayer = LayerId + 3;
+	// Key markers, each with a vertical drop-line down to its strip gem (dashed + faint when unselected,
+	// solid in the selection colour for the selected key).
+	// White SVG when supplied (tinted by the marker colour below), else the built-in square.
+	const FSlateBrush* KeyBrush = FPCGExRampsEditorStyle::GetKeyBrush();
+	const FSlateBrush* KeyMarkerBrush = KeyBrush ? KeyBrush : WhiteBrush;
 	const int32 SelIdx = Controller->GetSelectedIndex();
 	const int32 Num = Controller->NumKeys();
 	for (int32 i = 0; i < Num; ++i)
 	{
 		const FVector2D Pos = KeyToLocal(i, Size);
-
 		const bool bSelected = (i == SelIdx);
+
+		// Connector: key point -> plot bottom edge (the strip gem sits directly beneath, same X).
+		if (bSelected)
+		{
+			TArray<FVector2D> Line;
+			Line.Add(FVector2D(Pos.X, Pos.Y));
+			Line.Add(FVector2D(Pos.X, Bottom));
+			FSlateDrawElement::MakeLines(OutDrawElements, ConnectorLayer, AllottedGeometry.ToPaintGeometry(), Line, ESlateDrawEffect::None, PCGExRampGraphColors::ConnectorSelected, true, 1.0f);
+		}
+		else
+		{
+			constexpr float Dash = 3.0f;
+			constexpr float DashGap = 2.5f;
+			for (float Y = Pos.Y; Y < Bottom; Y += Dash + DashGap)
+			{
+				TArray<FVector2D> Seg;
+				Seg.Add(FVector2D(Pos.X, Y));
+				Seg.Add(FVector2D(Pos.X, FMath::Min(Y + Dash, Bottom)));
+				FSlateDrawElement::MakeLines(OutDrawElements, ConnectorLayer, AllottedGeometry.ToPaintGeometry(), Seg, ESlateDrawEffect::None, PCGExRampGraphColors::ConnectorNormal, true, 1.0f);
+			}
+		}
 
 		const float MarkerSize = bSelected ? HandleSize + 2.0f : HandleSize;
 		const FLinearColor MarkerColor = bSelected ? PCGExRampGraphColors::KeySelected : PCGExRampGraphColors::KeyNormal;
@@ -199,7 +261,7 @@ int32 SPCGExRampGraph::OnPaint(
 		FSlateDrawElement::MakeBox(
 			OutDrawElements, KeyLayer,
 			AllottedGeometry.ToPaintGeometry(FVector2D(MarkerSize, MarkerSize), FSlateLayoutTransform(FVector2D(Pos.X - MarkerSize * 0.5f, Pos.Y - MarkerSize * 0.5f))),
-			WhiteBrush, ESlateDrawEffect::None, MarkerColor);
+			KeyMarkerBrush, ESlateDrawEffect::None, MarkerColor);
 	}
 
 	return KeyLayer + 1;
