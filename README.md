@@ -1,4 +1,4 @@
-![UE 5.8](https://img.shields.io/badge/UE-5.8-darkgreen) ![UE 5.7](https://img.shields.io/badge/UE-5.7-darkgreen)
+![UE 5.8](https://img.shields.io/badge/UE-5.8-darkgreen) ![UE 5.7](https://img.shields.io/badge/5.7-darkgreen)
 
 # PCGEx | Ramps
 
