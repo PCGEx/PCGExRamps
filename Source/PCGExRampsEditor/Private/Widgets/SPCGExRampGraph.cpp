@@ -28,9 +28,7 @@ namespace PCGExRampGraphColors
 
 void SPCGExRampGraph::Construct(const FArguments& InArgs, const TSharedRef<FPCGExRampEditController>& InController)
 {
-	Controller = InController;
-	Controller->OnChanged.AddSP(this, &SPCGExRampGraph::HandleControllerChanged);
-	Controller->OnSelectionChanged.AddSP(this, &SPCGExRampGraph::HandleSelectionChanged);
+	Init(InController);
 }
 
 FVector2D SPCGExRampGraph::ComputeDesiredSize(float LayoutScaleMultiplier) const
@@ -38,27 +36,7 @@ FVector2D SPCGExRampGraph::ComputeDesiredSize(float LayoutScaleMultiplier) const
 	return FVector2D(DesiredWidth, DesiredHeight);
 }
 
-void SPCGExRampGraph::HandleControllerChanged(bool bInteractive)
-{
-	Invalidate(EInvalidateWidgetReason::Paint);
-}
-
-void SPCGExRampGraph::HandleSelectionChanged()
-{
-	Invalidate(EInvalidateWidgetReason::Paint);
-}
-
 #pragma region Coordinate mapping
-
-float SPCGExRampGraph::TimeToLocalX(float Time, const FVector2D& Size) const
-{
-	const float Left = Padding;
-	const float Right = Size.X - Padding;
-	// Map through the time frame (no clamp): a key dragged past the frozen frame's edge tracks the
-	// cursor beyond the plot and pulls back into view when the frame refits on release.
-	const float Alpha = Controller->TimeToFrameAlpha(Time);
-	return Left + Alpha * FMath::Max(Right - Left, 1.0f);
-}
 
 float SPCGExRampGraph::ValueToLocalY(float Value, const FVector2D& Size) const
 {
@@ -66,14 +44,6 @@ float SPCGExRampGraph::ValueToLocalY(float Value, const FVector2D& Size) const
 	const float Bottom = Size.Y - Padding;
 	const float Alpha = Controller->ValueToFrameAlpha(Value);
 	return Bottom - Alpha * FMath::Max(Bottom - Top, 1.0f);
-}
-
-float SPCGExRampGraph::LocalXToTime(float LocalX, const FVector2D& Size) const
-{
-	const float Left = Padding;
-	const float Right = Size.X - Padding;
-	const float Alpha = (LocalX - Left) / FMath::Max(Right - Left, 1.0f);
-	return Controller->FrameAlphaToTime(Alpha);
 }
 
 float SPCGExRampGraph::LocalYToValue(float LocalY, const FVector2D& Size) const
@@ -92,7 +62,7 @@ FVector2D SPCGExRampGraph::KeyToLocal(int32 Index, const FVector2D& Size) const
 	return FVector2D(TimeToLocalX(Controller->GetKeyTimeAt(Index), Size), ValueToLocalY(Controller->GetKeyValueAt(Index), Size));
 }
 
-int32 SPCGExRampGraph::HitTestKeyIndex(const FVector2D& LocalPos, const FVector2D& Size) const
+int32 SPCGExRampGraph::HitTestKey(const FVector2D& LocalPos, const FVector2D& Size) const
 {
 	int32 Best = INDEX_NONE;
 	float BestDistSq = HandleHitRadius * HandleHitRadius;
@@ -269,130 +239,20 @@ int32 SPCGExRampGraph::OnPaint(
 
 #pragma endregion
 
-#pragma region Input
+#pragma region Drag / add hooks
 
-FReply SPCGExRampGraph::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+void SPCGExRampGraph::ApplyDrag(const FVector2D& Local, const FVector2D& Size, bool bCtrlDown)
 {
-	if (!Controller.IsValid())
-	{
-		return FReply::Unhandled();
-	}
-
-	const FVector2D Size = MyGeometry.GetLocalSize();
-	const FVector2D Local = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
-	const int32 HitIdx = HitTestKeyIndex(Local, Size);
-
-	if (MouseEvent.GetEffectingButton() == EKeys::MiddleMouseButton)
-	{
-		if (HitIdx != INDEX_NONE)
-		{
-			Controller->DeleteKeyByIndex(HitIdx);
-		}
-		return FReply::Handled();
-	}
-
-	if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
-	{
-		// Alt + click a point: delete it (alternative to middle-click).
-		if (MouseEvent.IsAltDown())
-		{
-			if (HitIdx != INDEX_NONE)
-			{
-				Controller->DeleteKeyByIndex(HitIdx);
-			}
-			return FReply::Handled().SetUserFocus(SharedThis(this), EFocusCause::Mouse);
-		}
-
-		// Shift + click: add a key at the cursor (both X and value), then select it.
-		if (MouseEvent.IsShiftDown())
-		{
-			Controller->AddKeyAtTimeValue(LocalXToTime(Local.X, Size), LocalYToValue(Local.Y, Size));
-			return FReply::Handled().SetUserFocus(SharedThis(this), EFocusCause::Mouse);
-		}
-
-		if (HitIdx != INDEX_NONE)
-		{
-			Controller->SetSelectedKeyByIndex(HitIdx);
-			bDragging = true;
-			bDidDrag = false;
-			DragHandle = Controller->GetKeyHandleAt(HitIdx);
-			return FReply::Handled().CaptureMouse(SharedThis(this)).SetUserFocus(SharedThis(this), EFocusCause::Mouse);
-		}
-
-		Controller->ClearSelection();
-		return FReply::Handled().SetUserFocus(SharedThis(this), EFocusCause::Mouse);
-	}
-
-	if (MouseEvent.GetEffectingButton() == EKeys::RightMouseButton)
-	{
-		// Non-destructive: select only.
-		if (HitIdx != INDEX_NONE)
-		{
-			Controller->SetSelectedKeyByIndex(HitIdx);
-		}
-		return FReply::Handled();
-	}
-
-	return FReply::Unhandled();
+	// Ctrl locks the horizontal axis: keep the key's current time and edit value only. Read live, so
+	// releasing Ctrl mid-drag resumes free 2D movement.
+	const float NewTime = bCtrlDown ? Controller->GetKeyTime(DragHandle) : LocalXToTime(Local.X, Size);
+	Controller->MoveKey(DragHandle, NewTime, LocalYToValue(Local.Y, Size), /*bInteractive=*/true);
 }
 
-FReply SPCGExRampGraph::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+void SPCGExRampGraph::AddKeyAtCursor(const FVector2D& Local, const FVector2D& Size)
 {
-	if (bDragging && HasMouseCapture() && Controller.IsValid())
-	{
-		const FVector2D Size = MyGeometry.GetLocalSize();
-		const FVector2D Local = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
-		bDidDrag = true;
-		// Ctrl locks the horizontal axis: keep the key's current time and edit value only. Held live, so
-		// releasing Ctrl mid-drag resumes free 2D movement.
-		const float NewTime = MouseEvent.IsControlDown()
-			                      ? Controller->GetKeyTime(DragHandle)
-			                      : LocalXToTime(Local.X, Size);
-		Controller->MoveKey(DragHandle, NewTime, LocalYToValue(Local.Y, Size), /*bInteractive=*/true);
-		return FReply::Handled();
-	}
-	return FReply::Unhandled();
-}
-
-FReply SPCGExRampGraph::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
-{
-	if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && bDragging)
-	{
-		bDragging = false;
-		DragHandle = FKeyHandle::Invalid();
-		if (bDidDrag && Controller.IsValid())
-		{
-			Controller->CommitInteractive();
-		}
-		bDidDrag = false;
-		return FReply::Handled().ReleaseMouseCapture();
-	}
-	return FReply::Unhandled();
-}
-
-FReply SPCGExRampGraph::OnMouseButtonDoubleClick(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
-{
-	if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && Controller.IsValid())
-	{
-		const FVector2D Size = MyGeometry.GetLocalSize();
-		const FVector2D Local = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
-		if (HitTestKeyIndex(Local, Size) == INDEX_NONE)
-		{
-			Controller->AddKeyAtTime(LocalXToTime(Local.X, Size));
-			return FReply::Handled().SetUserFocus(SharedThis(this), EFocusCause::Mouse);
-		}
-	}
-	return FReply::Unhandled();
-}
-
-FReply SPCGExRampGraph::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
-{
-	if (Controller.IsValid() && (InKeyEvent.GetKey() == EKeys::Delete || InKeyEvent.GetKey() == EKeys::BackSpace))
-	{
-		Controller->DeleteSelectedKey();
-		return FReply::Handled();
-	}
-	return FReply::Unhandled();
+	// The graph has a value axis, so Shift+click lands the key exactly at the cursor (X and value).
+	Controller->AddKeyAtTimeValue(LocalXToTime(Local.X, Size), LocalYToValue(Local.Y, Size));
 }
 
 #pragma endregion

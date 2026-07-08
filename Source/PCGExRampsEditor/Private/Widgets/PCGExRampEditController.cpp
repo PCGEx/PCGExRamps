@@ -194,8 +194,10 @@ void FPCGExRampEditController::MoveKey(FKeyHandle Handle, float NewTime, float N
 
 	// No clamp: time and value are both free. SetKeyTime re-sorts the curve if this moves the key past a
 	// neighbour, and the handle survives that reorder, so keys reorder naturally as they're dragged.
+	// Suppress SetKeyValue's own tangent pass and recompute once at the end (SetKeyTime still forces one
+	// internally via delete/add, so two passes is the floor with this API -- down from three).
 	Curve->SetKeyTime(Handle, NewTime);
-	Curve->SetKeyValue(Handle, NewValue);
+	Curve->SetKeyValue(Handle, NewValue, /*bAutoSetTangents=*/false);
 	Curve->AutoSetTangents();
 
 	// Both frames freeze during an interactive drag (only refit on commit). Freezing gives the view a
@@ -215,7 +217,8 @@ void FPCGExRampEditController::SetKeyValue(FKeyHandle Handle, float NewValue, bo
 	{
 		return;
 	}
-	Curve->SetKeyValue(Handle, NewValue);
+	// Recompute tangents once, after the value is set (not inside SetKeyValue).
+	Curve->SetKeyValue(Handle, NewValue, /*bAutoSetTangents=*/false);
 	Curve->AutoSetTangents();
 
 	// Frame is frozen during an interactive drag (only refit on commit) -- this is what stops the

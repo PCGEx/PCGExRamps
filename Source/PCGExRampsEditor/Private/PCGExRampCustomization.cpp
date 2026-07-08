@@ -109,6 +109,14 @@ void FPCGExRampCustomization::HandleRampChanged(bool bInteractive)
 
 void FPCGExRampCustomization::HandleSettingsChanged(UObject* Object, FPropertyChangedEvent& Event)
 {
+	// ForceRefresh() rebuilds the detail layout and destroys this customization synchronously. If an
+	// interactive edit is still open, finalize it first (while DataHandle is still valid) so the property
+	// transaction closes -- otherwise it strands, breaking undo and leaving PCG mid-regeneration.
+	if (bInteractiveEditActive)
+	{
+		PushToProperty(/*bInteractive=*/false);
+	}
+
 	if (PropertyUtilities.IsValid())
 	{
 		PropertyUtilities->ForceRefresh();
