@@ -7,6 +7,7 @@ FPCGExRampEditController::FPCGExRampEditController(const TSharedRef<FRichCurve>&
 	: Curve(InCurve)
 {
 	RefitValueFrame();
+	RefitTimeFrame();
 }
 
 #pragma region Index <-> handle
@@ -49,6 +50,11 @@ float FPCGExRampEditController::GetKeyValueAt(int32 Index) const
 	return Curve->Keys.IsValidIndex(Index) ? Curve->Keys[Index].Value : 0.0f;
 }
 
+FKeyHandle FPCGExRampEditController::GetKeyHandleAt(int32 Index) const
+{
+	return GetKeyHandle(Index);
+}
+
 float FPCGExRampEditController::GetKeyTime(FKeyHandle Handle) const
 {
 	return Curve->IsKeyHandleValid(Handle) ? Curve->GetKeyTime(Handle) : 0.0f;
@@ -67,29 +73,6 @@ ERichCurveInterpMode FPCGExRampEditController::GetKeyInterp(FKeyHandle Handle) c
 bool FPCGExRampEditController::IsValidKey(FKeyHandle Handle) const
 {
 	return Curve->IsKeyHandleValid(Handle);
-}
-
-void FPCGExRampEditController::GetTimeBounds(FKeyHandle Handle, float& OutMin, float& OutMax) const
-{
-	const int32 Idx = GetKeyIndex(Handle);
-	const int32 Num = NumKeys();
-
-	if (Idx == INDEX_NONE)
-	{
-		OutMin = 0.0f;
-		OutMax = 1.0f;
-		return;
-	}
-
-	// Every key (including the first/last) is editable in X within the [0,1] domain. Clamping between
-	// neighbours keeps the keys ordered, so the first/last key always remains the lowest/highest
-	// position -- the endpoints are dynamic, not pinned.
-	OutMin = (Idx > 0) ? Curve->Keys[Idx - 1].Time + TimeEpsilon : 0.0f;
-	OutMax = (Idx < Num - 1) ? Curve->Keys[Idx + 1].Time - TimeEpsilon : 1.0f;
-	if (OutMin > OutMax)
-	{
-		OutMin = OutMax = Curve->Keys[Idx].Time;
-	}
 }
 
 #pragma endregion
@@ -127,11 +110,14 @@ void FPCGExRampEditController::ClearSelection()
 
 void FPCGExRampEditController::AddKeyAtTime(float Time)
 {
-	// Clamp inside the domain so a new key never lands coincident with a pinned endpoint.
-	const float T = FMath::Clamp(Time, TimeEpsilon, 1.0f - TimeEpsilon);
-	const float V = Curve->Eval(T);
+	// Seed the value by evaluating the current curve at Time, so the new key sits on the ramp.
+	AddKeyAtTimeValue(Time, Curve->Eval(Time));
+}
 
-	const FKeyHandle Handle = Curve->AddKey(T, V);
+void FPCGExRampEditController::AddKeyAtTimeValue(float Time, float Value)
+{
+	// Positions and values are free: add exactly where asked.
+	const FKeyHandle Handle = Curve->AddKey(Time, Value);
 
 	// Inherit interpolation from the left neighbour (fallback to the right, else linear).
 	const int32 Idx = GetKeyIndex(Handle);
@@ -154,13 +140,15 @@ void FPCGExRampEditController::AddKeyAtTime(float Time)
 	OnSelectionChanged.Broadcast();
 
 	RefitValueFrame();
+	RefitTimeFrame();
 	NotifyChanged(/*bInteractive=*/false);
 }
 
 void FPCGExRampEditController::DeleteKeyByIndex(int32 Index)
 {
-	// Always keep at least two keys, and never delete an endpoint.
-	if (NumKeys() <= 2 || Index <= 0 || Index >= NumKeys() - 1)
+	// Keep at least one key -- a lone key is a valid ramp (it evaluates as a constant). No key is
+	// special, so any key is deletable down to that floor.
+	if (NumKeys() <= 1 || !Curve->Keys.IsValidIndex(Index))
 	{
 		return;
 	}
@@ -185,6 +173,7 @@ void FPCGExRampEditController::DeleteKeyByIndex(int32 Index)
 	}
 
 	RefitValueFrame();
+	RefitTimeFrame();
 	NotifyChanged(/*bInteractive=*/false);
 }
 
@@ -196,11 +185,6 @@ void FPCGExRampEditController::DeleteSelectedKey()
 	}
 }
 
-void FPCGExRampEditController::MoveKeyByIndex(int32 Index, float NewTime, float NewValue, bool bInteractive)
-{
-	MoveKey(GetKeyHandle(Index), NewTime, NewValue, bInteractive);
-}
-
 void FPCGExRampEditController::MoveKey(FKeyHandle Handle, float NewTime, float NewValue, bool bInteractive)
 {
 	if (!IsValidKey(Handle))
@@ -208,19 +192,19 @@ void FPCGExRampEditController::MoveKey(FKeyHandle Handle, float NewTime, float N
 		return;
 	}
 
-	float MinT, MaxT;
-	GetTimeBounds(Handle, MinT, MaxT);
-	const float ClampedT = FMath::Clamp(NewTime, MinT, MaxT);
-
-	Curve->SetKeyTime(Handle, ClampedT);
+	// No clamp: time and value are both free. SetKeyTime re-sorts the curve if this moves the key past a
+	// neighbour, and the handle survives that reorder, so keys reorder naturally as they're dragged.
+	Curve->SetKeyTime(Handle, NewTime);
 	Curve->SetKeyValue(Handle, NewValue);
 	Curve->AutoSetTangents();
 
-	// Frame is frozen during an interactive drag (only refit on commit) -- this is what stops the
-	// value/frame feedback loop that otherwise blows values up to astronomical numbers.
+	// Both frames freeze during an interactive drag (only refit on commit). Freezing gives the view a
+	// stable screen<->data mapping: without it, a drag would grow the frame, which would remap the same
+	// cursor position to an ever-larger value -- a feedback loop that blows values up.
 	if (!bInteractive)
 	{
 		RefitValueFrame();
+		RefitTimeFrame();
 	}
 	NotifyChanged(bInteractive);
 }
@@ -259,6 +243,7 @@ void FPCGExRampEditController::SetKeyInterp(FKeyHandle Handle, ERichCurveInterpM
 void FPCGExRampEditController::CommitInteractive()
 {
 	RefitValueFrame();
+	RefitTimeFrame();
 	NotifyChanged(/*bInteractive=*/false);
 }
 
@@ -305,6 +290,38 @@ float FPCGExRampEditController::ValueToFrameAlpha(float Value) const
 float FPCGExRampEditController::FrameAlphaToValue(float Alpha) const
 {
 	return FrameMin + Alpha * (FrameMax - FrameMin);
+}
+
+void FPCGExRampEditController::RefitTimeFrame()
+{
+	float MinT = 0.0f;
+	float MaxT = 1.0f;
+
+	if (Curve->Keys.Num() > 0)
+	{
+		MinT = MaxT = Curve->Keys[0].Time;
+		for (const FRichCurveKey& Key : Curve->Keys)
+		{
+			MinT = FMath::Min(MinT, Key.Time);
+			MaxT = FMath::Max(MaxT, Key.Time);
+		}
+	}
+
+	// Always keep the canonical [0,1] domain in view (min span 1, edge-to-edge -- no padding), and
+	// expand to include any key that has been dragged outside it (in either direction).
+	TimeFrameMin = FMath::Min(0.0f, MinT);
+	TimeFrameMax = FMath::Max(1.0f, MaxT);
+}
+
+float FPCGExRampEditController::TimeToFrameAlpha(float Time) const
+{
+	const float Span = TimeFrameMax - TimeFrameMin;
+	return (Span > KINDA_SMALL_NUMBER) ? (Time - TimeFrameMin) / Span : 0.0f;
+}
+
+float FPCGExRampEditController::FrameAlphaToTime(float Alpha) const
+{
+	return TimeFrameMin + Alpha * (TimeFrameMax - TimeFrameMin);
 }
 
 #pragma endregion

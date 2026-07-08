@@ -46,7 +46,10 @@ float SPCGExRampGraph::TimeToLocalX(float Time, const FVector2D& Size) const
 {
 	const float Left = Padding;
 	const float Right = Size.X - Padding;
-	return Left + FMath::Clamp(Time, 0.0f, 1.0f) * FMath::Max(Right - Left, 1.0f);
+	// Map through the time frame (no clamp): a key dragged past the frozen frame's edge tracks the
+	// cursor beyond the plot and pulls back into view when the frame refits on release.
+	const float Alpha = Controller->TimeToFrameAlpha(Time);
+	return Left + Alpha * FMath::Max(Right - Left, 1.0f);
 }
 
 float SPCGExRampGraph::ValueToLocalY(float Value, const FVector2D& Size) const
@@ -61,7 +64,8 @@ float SPCGExRampGraph::LocalXToTime(float LocalX, const FVector2D& Size) const
 {
 	const float Left = Padding;
 	const float Right = Size.X - Padding;
-	return FMath::Clamp((LocalX - Left) / FMath::Max(Right - Left, 1.0f), 0.0f, 1.0f);
+	const float Alpha = (LocalX - Left) / FMath::Max(Right - Left, 1.0f);
+	return Controller->FrameAlphaToTime(Alpha);
 }
 
 float SPCGExRampGraph::LocalYToValue(float LocalY, const FVector2D& Size) const
@@ -69,10 +73,10 @@ float SPCGExRampGraph::LocalYToValue(float LocalY, const FVector2D& Size) const
 	const float Top = Padding;
 	const float Bottom = Size.Y - Padding;
 	const float Alpha = (Bottom - LocalY) / FMath::Max(Bottom - Top, 1.0f);
-	// Clamp to [0,1] of the (drag-frozen) frame: a vertical drag can't exceed the value range shown at
-	// drag start, so dragging past the top/bottom edge can't run the value away. Use the numeric Value
-	// field to set values beyond the visible range.
-	return Controller->FrameAlphaToValue(FMath::Clamp(Alpha, 0.0f, 1.0f));
+	// No clamp: the value follows the cursor unbounded. The frame is frozen mid-drag (stable mapping,
+	// no feedback loop), so the point can be dragged past the top/bottom edge; the frame refits with
+	// headroom on release. This is what lets the extremes (usually the end keys) leave the border.
+	return Controller->FrameAlphaToValue(Alpha);
 }
 
 FVector2D SPCGExRampGraph::KeyToLocal(int32 Index, const FVector2D& Size) const
@@ -160,14 +164,19 @@ int32 SPCGExRampGraph::OnPaint(
 		FSlateDrawElement::MakeLines(OutDrawElements, GridLayer, AllottedGeometry.ToPaintGeometry(), Box, ESlateDrawEffect::None, PCGExRampGraphColors::Border, true, 1.0f);
 	}
 
-	// Evaluated curve.
+	// Evaluated curve, sampled across the whole visible frame (which may be wider than [0,1]) so the
+	// extrapolated tails and any out-of-range keys are drawn edge to edge.
 	const FRichCurve& RichCurve = Controller->GetCurve();
 	{
+		const float FrameMinT = Controller->GetTimeFrameMin();
+		const float FrameMaxT = Controller->GetTimeFrameMax();
+		const float SpanT = FrameMaxT - FrameMinT;
+
 		TArray<FVector2D> CurvePoints;
 		CurvePoints.Reserve(CurveSamples + 1);
 		for (int32 i = 0; i <= CurveSamples; ++i)
 		{
-			const float T = static_cast<float>(i) / static_cast<float>(CurveSamples);
+			const float T = FrameMinT + SpanT * (static_cast<float>(i) / static_cast<float>(CurveSamples));
 			const float V = RichCurve.Eval(T);
 			CurvePoints.Add(FVector2D(TimeToLocalX(T, Size), ValueToLocalY(V, Size)));
 		}
@@ -222,12 +231,29 @@ FReply SPCGExRampGraph::OnMouseButtonDown(const FGeometry& MyGeometry, const FPo
 
 	if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
 	{
+		// Alt + click a point: delete it (alternative to middle-click).
+		if (MouseEvent.IsAltDown())
+		{
+			if (HitIdx != INDEX_NONE)
+			{
+				Controller->DeleteKeyByIndex(HitIdx);
+			}
+			return FReply::Handled().SetUserFocus(SharedThis(this), EFocusCause::Mouse);
+		}
+
+		// Shift + click: add a key at the cursor (both X and value), then select it.
+		if (MouseEvent.IsShiftDown())
+		{
+			Controller->AddKeyAtTimeValue(LocalXToTime(Local.X, Size), LocalYToValue(Local.Y, Size));
+			return FReply::Handled().SetUserFocus(SharedThis(this), EFocusCause::Mouse);
+		}
+
 		if (HitIdx != INDEX_NONE)
 		{
 			Controller->SetSelectedKeyByIndex(HitIdx);
 			bDragging = true;
 			bDidDrag = false;
-			DragIndex = HitIdx;
+			DragHandle = Controller->GetKeyHandleAt(HitIdx);
 			return FReply::Handled().CaptureMouse(SharedThis(this)).SetUserFocus(SharedThis(this), EFocusCause::Mouse);
 		}
 
@@ -255,7 +281,12 @@ FReply SPCGExRampGraph::OnMouseMove(const FGeometry& MyGeometry, const FPointerE
 		const FVector2D Size = MyGeometry.GetLocalSize();
 		const FVector2D Local = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
 		bDidDrag = true;
-		Controller->MoveKeyByIndex(DragIndex, LocalXToTime(Local.X, Size), LocalYToValue(Local.Y, Size), /*bInteractive=*/true);
+		// Ctrl locks the horizontal axis: keep the key's current time and edit value only. Held live, so
+		// releasing Ctrl mid-drag resumes free 2D movement.
+		const float NewTime = MouseEvent.IsControlDown()
+			                      ? Controller->GetKeyTime(DragHandle)
+			                      : LocalXToTime(Local.X, Size);
+		Controller->MoveKey(DragHandle, NewTime, LocalYToValue(Local.Y, Size), /*bInteractive=*/true);
 		return FReply::Handled();
 	}
 	return FReply::Unhandled();
@@ -266,6 +297,7 @@ FReply SPCGExRampGraph::OnMouseButtonUp(const FGeometry& MyGeometry, const FPoin
 	if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && bDragging)
 	{
 		bDragging = false;
+		DragHandle = FKeyHandle::Invalid();
 		if (bDidDrag && Controller.IsValid())
 		{
 			Controller->CommitInteractive();

@@ -121,15 +121,15 @@ void FPCGExRampCustomization::PullFromProperty()
 	if (DataHandle.IsValid()
 		&& DataHandle->GetValue(Data) == FPropertyAccess::Success
 		&& PCGExRampFormat::Parse(Data, *CurveData)
-		&& CurveData->Keys.Num() >= 2)
+		&& CurveData->Keys.Num() >= 1)
 	{
-		// Normalize to the editor's domain: clamp positions to [0,1] (monotonic, so key order is
-		// preserved). Reject non-finite / absurd values (e.g. data corrupted by the old drag bug).
+		// Positions and values are both free (the editor auto-frames both axes), so keys are kept verbatim.
+		// The only unusable payload is a non-finite one (NaN / Inf) -- a finite value, however large, is a
+		// valid ramp and must not be silently replaced with the default.
 		bool bSane = true;
-		for (FRichCurveKey& Key : CurveData->Keys)
+		for (const FRichCurveKey& Key : CurveData->Keys)
 		{
-			Key.Time = FMath::Clamp(Key.Time, 0.0f, 1.0f);
-			if (!FMath::IsFinite(Key.Value) || FMath::Abs(Key.Value) > 1.0e6f)
+			if (!FMath::IsFinite(Key.Time) || !FMath::IsFinite(Key.Value))
 			{
 				bSane = false;
 			}
@@ -144,8 +144,8 @@ void FPCGExRampCustomization::PullFromProperty()
 	}
 
 	// Empty / unreadable / malformed / corrupt payload: fall back to the default linear 0->1 ramp so the
-	// editor always shows a valid two-key ramp instead of a blank graph. SourceData stays empty so the
-	// first real edit writes the corrected payload through.
+	// editor always shows a valid ramp instead of a blank graph. SourceData stays empty so the first real
+	// edit writes the corrected payload through.
 	CurveData->Reset();
 	const FKeyHandle First = CurveData->AddKey(0.0f, 0.0f);
 	const FKeyHandle Last = CurveData->AddKey(1.0f, 1.0f);

@@ -163,7 +163,8 @@ TSharedRef<SWidget> SPCGExRampEditor::BuildInspector()
 		[
 			SNew(SNumericEntryBox<float>)
 			.AllowSpin(true)
-			.MinValue(0.0f).MaxValue(1.0f)
+			// No hard min/max: positions are free (incl. negative and > 1). The slider still spans the
+			// canonical [0,1] for convenience; typing goes beyond it.
 			.MinSliderValue(0.0f).MaxSliderValue(1.0f)
 			.Delta(0.01f)
 			.IsEnabled_Lambda([this]() { return HasSelection(); })

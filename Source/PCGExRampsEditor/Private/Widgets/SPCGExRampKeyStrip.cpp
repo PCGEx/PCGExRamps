@@ -44,14 +44,17 @@ float SPCGExRampKeyStrip::TimeToLocalX(float Time, const FVector2D& Size) const
 {
 	const float Left = Padding;
 	const float Right = Size.X - Padding;
-	return Left + FMath::Clamp(Time, 0.0f, 1.0f) * FMath::Max(Right - Left, 1.0f);
+	// Map through the shared time frame (no clamp) so gems line up under the graph's points.
+	const float Alpha = Controller->TimeToFrameAlpha(Time);
+	return Left + Alpha * FMath::Max(Right - Left, 1.0f);
 }
 
 float SPCGExRampKeyStrip::LocalXToTime(float LocalX, const FVector2D& Size) const
 {
 	const float Left = Padding;
 	const float Right = Size.X - Padding;
-	return FMath::Clamp((LocalX - Left) / FMath::Max(Right - Left, 1.0f), 0.0f, 1.0f);
+	const float Alpha = (LocalX - Left) / FMath::Max(Right - Left, 1.0f);
+	return Controller->FrameAlphaToTime(Alpha);
 }
 
 int32 SPCGExRampKeyStrip::HitTestKeyIndex(float LocalX, const FVector2D& Size) const
@@ -158,12 +161,29 @@ FReply SPCGExRampKeyStrip::OnMouseButtonDown(const FGeometry& MyGeometry, const 
 
 	if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
 	{
+		// Alt + click a gem: delete it (alternative to middle-click).
+		if (MouseEvent.IsAltDown())
+		{
+			if (HitIdx != INDEX_NONE)
+			{
+				Controller->DeleteKeyByIndex(HitIdx);
+			}
+			return FReply::Handled().SetUserFocus(SharedThis(this), EFocusCause::Mouse);
+		}
+
+		// Shift + click: add a key at the cursor time (value sampled from the curve -- the strip has no Y).
+		if (MouseEvent.IsShiftDown())
+		{
+			Controller->AddKeyAtTime(LocalXToTime(Local.X, Size));
+			return FReply::Handled().SetUserFocus(SharedThis(this), EFocusCause::Mouse);
+		}
+
 		if (HitIdx != INDEX_NONE)
 		{
 			Controller->SetSelectedKeyByIndex(HitIdx);
 			bDragging = true;
 			bDidDrag = false;
-			DragIndex = HitIdx;
+			DragHandle = Controller->GetKeyHandleAt(HitIdx);
 			return FReply::Handled().CaptureMouse(SharedThis(this)).SetUserFocus(SharedThis(this), EFocusCause::Mouse);
 		}
 
@@ -191,7 +211,7 @@ FReply SPCGExRampKeyStrip::OnMouseMove(const FGeometry& MyGeometry, const FPoint
 		const FVector2D Local = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
 		bDidDrag = true;
 		// X only: keep the current value.
-		Controller->MoveKeyByIndex(DragIndex, LocalXToTime(Local.X, Size), Controller->GetKeyValueAt(DragIndex), /*bInteractive=*/true);
+		Controller->MoveKey(DragHandle, LocalXToTime(Local.X, Size), Controller->GetKeyValue(DragHandle), /*bInteractive=*/true);
 		return FReply::Handled();
 	}
 	return FReply::Unhandled();
@@ -202,6 +222,7 @@ FReply SPCGExRampKeyStrip::OnMouseButtonUp(const FGeometry& MyGeometry, const FP
 	if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && bDragging)
 	{
 		bDragging = false;
+		DragHandle = FKeyHandle::Invalid();
 		if (bDidDrag && Controller.IsValid())
 		{
 			Controller->CommitInteractive();

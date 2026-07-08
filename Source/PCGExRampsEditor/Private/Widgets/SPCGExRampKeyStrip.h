@@ -4,19 +4,23 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Curves/KeyHandle.h"
 #include "Widgets/SLeafWidget.h"
 
 class FPCGExRampEditController;
 
 /**
- * Houdini-style key strip: a horizontal bar of draggable gems, one per key, positioned by their
- * normalized time. Shares the graph's horizontal padding so a gem sits directly under its point.
+ * Houdini-style key strip: a horizontal bar of draggable gems, one per key, positioned by their time
+ * within the shared X frame. Shares the graph's horizontal padding so a gem sits directly under its
+ * point.
  *
  * Interaction (X only -- value is edited on the graph or in the inspector):
  *   - left-click a gem     : select (and begin an X drag)
- *   - drag a gem           : move it in X (clamped between neighbours; endpoints locked)
+ *   - drag a gem           : move it in X; dragging past a neighbour reorders keys
+ *   - Shift + click        : add a key at the cursor time (value sampled from the curve)
  *   - double-click empty   : add a key there
- *   - middle-click a gem   : delete it (interior keys only)
+ *   - Alt + click a gem    : delete it (down to a one-key minimum)
+ *   - middle-click a gem   : delete it (down to a one-key minimum)
  *   - Del / Backspace      : delete the selected key
  *   - right-click a gem    : select only (non-destructive)
  */
@@ -54,7 +58,8 @@ private:
 
 	bool bDragging = false;
 	bool bDidDrag = false;
-	int32 DragIndex = INDEX_NONE;
+	/** Key being dragged, tracked by handle so a reorder mid-drag can't point us at the wrong key. */
+	FKeyHandle DragHandle = FKeyHandle::Invalid();
 
 	static constexpr float Padding = 8.0f;
 	static constexpr float GemWidth = 10.0f;

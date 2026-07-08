@@ -4,22 +4,27 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Curves/KeyHandle.h"
 #include "Widgets/SLeafWidget.h"
 
 class FPCGExRampEditController;
 
 /**
- * Normalized [0,1] ramp graph: paints the evaluated curve and one draggable point per key.
+ * Ramp graph: paints the evaluated curve and one draggable point per key. The X/Y axes auto-frame to
+ * the controller's time/value frames (X always spans at least [0,1]); this widget only maps geometry.
  *
  * Interaction:
  *   - left-click a point   : select (and begin a 2D drag)
- *   - drag a point         : move it in X (clamped between neighbours; endpoints locked) and value
+ *   - drag a point         : move it freely in X and value; dragging past a neighbour reorders keys
+ *   - Ctrl + drag a point  : lock X (value-only drag)
+ *   - Shift + click        : add a key at the cursor (X and value)
  *   - double-click empty   : add a key at the evaluated value there
- *   - middle-click a point : delete it (interior keys only)
+ *   - Alt + click a point  : delete it (down to a one-key minimum)
+ *   - middle-click a point : delete it (down to a one-key minimum)
  *   - Del / Backspace      : delete the selected key
  *   - right-click a point  : select only (non-destructive)
  *
- * All mutation goes through the shared FPCGExRampEditController; this widget only maps geometry.
+ * All mutation goes through the shared FPCGExRampEditController.
  */
 class SPCGExRampGraph : public SLeafWidget
 {
@@ -58,7 +63,8 @@ private:
 
 	bool bDragging = false;
 	bool bDidDrag = false;
-	int32 DragIndex = INDEX_NONE;
+	/** Key being dragged, tracked by handle so a reorder mid-drag can't point us at the wrong key. */
+	FKeyHandle DragHandle = FKeyHandle::Invalid();
 
 	static constexpr float Padding = 8.0f;
 	static constexpr float HandleSize = 9.0f;

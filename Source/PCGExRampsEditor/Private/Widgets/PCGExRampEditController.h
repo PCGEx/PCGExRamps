@@ -17,14 +17,17 @@ DECLARE_MULTICAST_DELEGATE(FPCGExOnRampSelectionChanged);
  * Shared edit state for the inline ramp widgets (graph + key strip).
  *
  * Wraps the transient working FRichCurve and is the single place that enforces the ramp invariants:
- *   - at least two keys, the first and last of which are "endpoints"
- *   - endpoints cannot be deleted and cannot be dragged in X (their time is pinned)
- *   - interior keys never reorder (X drag clamps between neighbours)
+ *   - at least one key (a lone key evaluates as a constant, which is the whole ramp)
+ *   - no key is special: any key can be deleted (while >= 1 remains), moved, or reordered past any
+ *     other by dragging (SetKeyTime re-sorts; the FKeyHandle survives the reorder)
  *
- * Position (time) is a normalized [0,1] domain. Value (Y) is never clamped -- the value axis
- * auto-frames to the key range instead (frame only grows during an interactive drag, then refits on
- * commit). The views talk to this in key *indices*; index<->handle bridging stays here (only the
- * curve's public API is used).
+ * Both axes are fully free (no value/position clamp, negative positions allowed) and auto-frame to
+ * the key range: the value frame fits keys plus padding; the time frame fits keys but always spans at
+ * least [0,1] (edge-to-edge, no padding). Both frames freeze during an interactive drag so the view's
+ * screen<->data mapping stays a stable reference (no feedback loop), then refit on commit.
+ *
+ * The views drive edits by key *handle* (stable across reorders) and read for paint by *index*;
+ * index<->handle bridging stays here (only the curve's public API is used).
  */
 class FPCGExRampEditController
 {
@@ -37,6 +40,8 @@ public:
 	// --- Read by index (for painting / hit-testing) ---
 	float GetKeyTimeAt(int32 Index) const;
 	float GetKeyValueAt(int32 Index) const;
+	/** Stable handle for the key at Index (views grab this on drag-start so a reorder can't lose it). */
+	FKeyHandle GetKeyHandleAt(int32 Index) const;
 
 	// --- Read by handle (for the inspector's current selection) ---
 	float GetKeyTime(FKeyHandle Handle) const;
@@ -53,27 +58,31 @@ public:
 
 	// --- Edits (all notify OnChanged; bInteractive coalesces undo and only grows the value frame) ---
 	void AddKeyAtTime(float Time);
+	/** Add a key at an explicit time AND value (Shift+click on the graph places one at the cursor). */
+	void AddKeyAtTimeValue(float Time, float Value);
 	void DeleteKeyByIndex(int32 Index);
 	void DeleteSelectedKey();
-	void MoveKeyByIndex(int32 Index, float NewTime, float NewValue, bool bInteractive);
 	void MoveKey(FKeyHandle Handle, float NewTime, float NewValue, bool bInteractive);
 	void SetKeyValue(FKeyHandle Handle, float NewValue, bool bInteractive);
 	void SetKeyInterp(FKeyHandle Handle, ERichCurveInterpMode Mode);
 
-	/** Close an interactive gesture: refit the value frame tightly and emit a final (undoable) change. */
+	/** Close an interactive gesture: refit both frames tightly and emit a final (undoable) change. */
 	void CommitInteractive();
 
-	// --- Value-axis framing ---
+	// --- Value-axis framing (Y) ---
 	float GetFrameMin() const { return FrameMin; }
 	float GetFrameMax() const { return FrameMax; }
 	float ValueToFrameAlpha(float Value) const;
 	float FrameAlphaToValue(float Alpha) const;
 
+	// --- Time-axis framing (X) -- always spans at least [0,1], expands to include out-of-range keys ---
+	float GetTimeFrameMin() const { return TimeFrameMin; }
+	float GetTimeFrameMax() const { return TimeFrameMax; }
+	float TimeToFrameAlpha(float Time) const;
+	float FrameAlphaToTime(float Alpha) const;
+
 	FPCGExOnRampChanged OnChanged;
 	FPCGExOnRampSelectionChanged OnSelectionChanged;
-
-	/** Smallest gap kept between neighbouring keys when dragging in X. */
-	static constexpr float TimeEpsilon = 1.e-4f;
 
 private:
 	void NotifyChanged(bool bInteractive) { OnChanged.Broadcast(bInteractive); }
@@ -85,12 +94,14 @@ private:
 
 	void SetSelectedKey(FKeyHandle Handle);
 
-	/** X-range a key may occupy: endpoints return [time,time]; interior keys are clamped between neighbours. */
-	void GetTimeBounds(FKeyHandle Handle, float& OutMin, float& OutMax) const;
-
-	/** Recompute the value frame to tightly fit the current keys. Called on non-interactive edits only;
-	 *  the frame stays frozen during a drag so the Y mapping has a stable reference (no feedback loop). */
+	/** Recompute the value frame to tightly fit the current keys (+ padding). Called on non-interactive
+	 *  edits only; the frame stays frozen during a drag so the Y mapping has a stable reference (no
+	 *  feedback loop). */
 	void RefitValueFrame();
+
+	/** Recompute the time frame: fits the current keys but always spans at least [0,1] (no padding).
+	 *  Frozen during a drag for the same stable-reference reason as the value frame. */
+	void RefitTimeFrame();
 
 	TSharedRef<FRichCurve> Curve;
 
@@ -98,6 +109,9 @@ private:
 
 	float FrameMin = 0.0f;
 	float FrameMax = 1.0f;
+
+	float TimeFrameMin = 0.0f;
+	float TimeFrameMax = 1.0f;
 
 	/** Fraction of the value span added as headroom above/below so points sit inside the border. */
 	static constexpr float FramePadding = 0.08f;
