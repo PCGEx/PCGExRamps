@@ -161,11 +161,35 @@ int32 SPCGExRampGraph::OnPaint(
 		const float FrameMaxT = Controller->GetTimeFrameMax();
 		const float SpanT = FrameMaxT - FrameMinT;
 
-		TArray<FVector2D> CurvePoints;
-		CurvePoints.Reserve(CurveSamples + 1);
+		// Sample times: a uniform grid across the frame, anchored by every in-frame key time plus a
+		// just-before-key time. A uniform grid alone straddles the keys, which renders a
+		// constant-interp step as a slant one grid cell wide and shifts kinks off their key --
+		// no density fixes that. The pre-key sample holds the previous segment's value right up to
+		// the key, so steps drop vertically and kinks land exactly on their key at any resolution.
+		TArray<float> SampleTimes;
+		SampleTimes.Reserve(CurveSamples + 1 + RichCurve.GetNumKeys() * 2);
 		for (int32 i = 0; i <= CurveSamples; ++i)
 		{
-			const float T = FrameMinT + SpanT * (static_cast<float>(i) / static_cast<float>(CurveSamples));
+			SampleTimes.Add(FrameMinT + SpanT * (static_cast<float>(i) / static_cast<float>(CurveSamples)));
+		}
+		for (const FRichCurveKey& Key : RichCurve.GetConstRefOfKeys())
+		{
+			if (Key.Time <= FrameMinT || Key.Time >= FrameMaxT)
+			{
+				continue;
+			}
+			// Sub-pixel in screen space, but large enough to survive float subtraction at the
+			// key's own magnitude (relative term covers frames far from t=0).
+			const float PreKeyEpsilon = FMath::Max(SpanT * 1.0e-4f, FMath::Abs(Key.Time) * 1.0e-6f);
+			SampleTimes.Add(Key.Time - PreKeyEpsilon);
+			SampleTimes.Add(Key.Time);
+		}
+		SampleTimes.Sort();
+
+		TArray<FVector2D> CurvePoints;
+		CurvePoints.Reserve(SampleTimes.Num());
+		for (const float T : SampleTimes)
+		{
 			const float V = RichCurve.Eval(T);
 			CurvePoints.Add(FVector2D(TimeToLocalX(T, Size), ValueToLocalY(V, Size)));
 		}
