@@ -43,5 +43,7 @@ private:
 	static constexpr float HandleHitRadius = 11.0f;
 	static constexpr float DesiredWidth = 320.0f;
 	static constexpr float DesiredHeight = 110.0f;
-	static constexpr int32 CurveSamples = 128;
+	// Uniform grid density for the painted curve; key times are additionally injected as exact
+	// sample points at paint time (see OnPaint), so steps/kinks stay crisp independently of this.
+	static constexpr int32 CurveSamples = 256;
 };
