@@ -1,7 +1,7 @@
 {
   "FileVersion": 3,
   "Version": 1,
-  "VersionName": "1.0.0",
+  "VersionName": "1.0.1",
   "FriendlyName": "PCGEx | Ramps",
   "Description": "Inline ramp/curve authoring for PCG. Encodes a curve or LUT into a single compact-text string, builds a transient UCurveFloat from it, and exposes that curve via soft object path so native PCG nodes can consume an inline-authored curve without a saved asset.",
   "Category": "PCG",
