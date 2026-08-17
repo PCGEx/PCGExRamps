@@ -243,6 +243,116 @@ void FPCGExRampEditController::SetKeyInterp(FKeyHandle Handle, ERichCurveInterpM
 	NotifyChanged(/*bInteractive=*/false);
 }
 
+void FPCGExRampEditController::FlipTime()
+{
+	const int32 Num = NumKeys();
+	if (Num == 0)
+	{
+		return;
+	}
+
+	// Keys are time-sorted, so the extremes bracket the occupied span; mirroring across them keeps
+	// that span identical, which is what makes the flip an exact involution.
+	const float MinT = Curve->Keys[0].Time;
+	const float MaxT = Curve->Keys.Last().Time;
+
+	struct FFlippedKey
+	{
+		FKeyHandle Handle;
+		float NewTime = 0.0f;
+		ERichCurveInterpMode NewInterp = RCIM_Linear;
+		float NewArrive = 0.0f;
+		float NewLeave = 0.0f;
+		float NewArriveWeight = 0.0f;
+		float NewLeaveWeight = 0.0f;
+		TEnumAsByte<ERichCurveTangentWeightMode> NewWeightMode = RCTWM_WeightedNone;
+	};
+
+	// Snapshot every key's mirrored state up front: applying mutates the ordering mid-walk.
+	TArray<FFlippedKey> Flipped;
+	Flipped.Reserve(Num);
+
+	int32 Index = 0;
+	for (auto It = Curve->GetKeyHandleIterator(); It; ++It, ++Index)
+	{
+		const FRichCurveKey& Key = Curve->Keys[Index];
+		FFlippedKey& Target = Flipped.AddDefaulted_GetRef();
+		Target.Handle = *It;
+		Target.NewTime = MinT + MaxT - Key.Time;
+		// A horizontal mirror swaps each key's arrive/leave sides and negates the slopes.
+		Target.NewArrive = -Key.LeaveTangent;
+		Target.NewLeave = -Key.ArriveTangent;
+		Target.NewArriveWeight = Key.LeaveTangentWeight;
+		Target.NewLeaveWeight = Key.ArriveTangentWeight;
+		switch (Key.TangentWeightMode.GetValue())
+		{
+		case RCTWM_WeightedArrive:
+			Target.NewWeightMode = RCTWM_WeightedLeave;
+			break;
+		case RCTWM_WeightedLeave:
+			Target.NewWeightMode = RCTWM_WeightedArrive;
+			break;
+		default:
+			Target.NewWeightMode = Key.TangentWeightMode;
+			break;
+		}
+		// Interp lives on the segment's LEFT key; after the mirror the segment leaving key k is the
+		// mirror of the segment that ENTERED it, i.e. key (k-1)'s. Key 0's takes the last key's
+		// (segment-unused) interp so the flip stays a perfect involution.
+		Target.NewInterp = (Index > 0 ? Curve->Keys[Index - 1] : Curve->Keys[Num - 1]).InterpMode.GetValue();
+	}
+
+	// Move times first -- SetKeyTime re-sorts and clones the whole old key under the same handle --
+	// then overwrite the mirrored fields on the settled keys.
+	for (const FFlippedKey& Target : Flipped)
+	{
+		Curve->SetKeyTime(Target.Handle, Target.NewTime);
+	}
+	for (const FFlippedKey& Target : Flipped)
+	{
+		FRichCurveKey& Key = Curve->GetKey(Target.Handle);
+		Key.InterpMode = Target.NewInterp;
+		Key.ArriveTangent = Target.NewArrive;
+		Key.LeaveTangent = Target.NewLeave;
+		Key.ArriveTangentWeight = Target.NewArriveWeight;
+		Key.LeaveTangentWeight = Target.NewLeaveWeight;
+		Key.TangentWeightMode = Target.NewWeightMode;
+	}
+	Curve->AutoSetTangents();
+
+	RefitValueFrame();
+	RefitTimeFrame();
+	NotifyChanged(/*bInteractive=*/false);
+}
+
+void FPCGExRampEditController::FlipValues()
+{
+	if (NumKeys() == 0)
+	{
+		return;
+	}
+
+	float MinV = Curve->Keys[0].Value;
+	float MaxV = MinV;
+	for (const FRichCurveKey& Key : Curve->Keys)
+	{
+		MinV = FMath::Min(MinV, Key.Value);
+		MaxV = FMath::Max(MaxV, Key.Value);
+	}
+
+	for (FRichCurveKey& Key : Curve->Keys)
+	{
+		Key.Value = MinV + MaxV - Key.Value;
+		// A vertical mirror negates slopes; arrive/leave keep their sides.
+		Key.ArriveTangent = -Key.ArriveTangent;
+		Key.LeaveTangent = -Key.LeaveTangent;
+	}
+	Curve->AutoSetTangents();
+
+	RefitValueFrame();
+	NotifyChanged(/*bInteractive=*/false);
+}
+
 void FPCGExRampEditController::CommitInteractive()
 {
 	RefitValueFrame();

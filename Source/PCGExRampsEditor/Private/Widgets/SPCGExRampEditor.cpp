@@ -8,7 +8,10 @@
 #include "SPCGExRampKeyStrip.h"
 
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Styling/AppStyle.h"
 #include "Textures/SlateIcon.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/Layout/SBox.h"
@@ -208,6 +211,38 @@ TSharedRef<SWidget> SPCGExRampEditor::BuildInspector()
 			.ButtonContent()
 			[
 				SNew(STextBlock).Text_Lambda([this]() { return GetSelectedInterpText(); })
+			]
+		]
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+		[
+			SNew(SButton)
+			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+			.ContentPadding(FMargin(2.0f))
+			.ToolTipText(LOCTEXT("FlipHorizontalTooltip", "Flip Horizontal: mirror key positions across their own min/max. Flipping twice restores the original curve."))
+			.OnClicked_Lambda([this]() { Controller->FlipTime(); return FReply::Handled(); })
+			[
+				SNew(SImage)
+				.Image(FAppStyle::GetBrush("GenericCurveEditor.FlipCurveHorizontal"))
+				.DesiredSizeOverride(FVector2D(16.0f, 16.0f))
+			]
+		]
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(2.0f, 0.0f, 0.0f, 0.0f)
+		[
+			SNew(SButton)
+			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+			.ContentPadding(FMargin(2.0f))
+			.ToolTipText(LOCTEXT("FlipVerticalTooltip", "Flip Vertical: mirror key values across their own min/max. Flipping twice restores the original curve."))
+			.OnClicked_Lambda([this]() { Controller->FlipValues(); return FReply::Handled(); })
+			[
+				SNew(SImage)
+				.Image(FAppStyle::GetBrush("GenericCurveEditor.FlipCurveVertical"))
+				.DesiredSizeOverride(FVector2D(16.0f, 16.0f))
 			]
 		];
 }
