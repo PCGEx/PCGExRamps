@@ -66,6 +66,12 @@ public:
 	void SetKeyValue(FKeyHandle Handle, float NewValue, bool bInteractive);
 	void SetKeyInterp(FKeyHandle Handle, ERichCurveInterpMode Mode);
 
+	/** Mirror key times across the keys' own [min,max] (new = min + max - old): an exact involution,
+	 *  so flipping twice restores the original curve. Reverses key order, segment interps and tangents. */
+	void FlipTime();
+	/** Mirror key values across the keys' own [min,max]. Same involution guarantee as FlipTime. */
+	void FlipValues();
+
 	/** Close an interactive gesture: refit both frames tightly and emit a final (undoable) change. */
 	void CommitInteractive();
 
