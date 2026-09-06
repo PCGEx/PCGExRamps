@@ -137,14 +137,15 @@ namespace PCGExResolveRamp
 
 		check(IsInGameThread());
 
-		// Outer the resource to the component (matches StagingLoadLevel); outer the curve to the
-		// resource so its lifetime is unambiguous and its object path is unique + resolvable.
+		// Outer the resource to the component (matches StagingLoadLevel) so PCG owns its lifetime. The curve
+		// lives in the transient package, not under the resource: a strong reference a consumer takes on it
+		// (a streamable handle, say) then pins one small object instead of the component's actor, level and world.
 		UPCGExManagedRampCurve* Managed = NewObject<UPCGExManagedRampCurve>(Component);
 		Managed->SetCrc(Crc);
 		Managed->Config = Canonical;
 
-		const FName CurveName = MakeUniqueObjectName(Managed, UCurveFloat::StaticClass(), FName(TEXT("RampCurve")));
-		UCurveFloat* CurveAsset = NewObject<UCurveFloat>(Managed, CurveName, RF_Transient);
+		const FName CurveName = MakeUniqueObjectName(GetTransientPackage(), UCurveFloat::StaticClass(), FName(TEXT("PCGExRampCurve")));
+		UCurveFloat* CurveAsset = NewObject<UCurveFloat>(GetTransientPackage(), CurveName, RF_Transient);
 		CurveAsset->FloatCurve = MoveTemp(Curve);
 
 		Managed->Curve = CurveAsset;

@@ -13,8 +13,10 @@ class UCurveFloat;
  * PCG managed resource owning a transient UCurveFloat built by the Resolve Ramp node.
  *
  * Lifetime: the Curve UPROPERTY keeps the curve alive; the component's managed-resource set keeps
- * this alive. PCG marks all resources unused each (re)generation; the node re-marks the ones it still
- * needs (by CRC), and PCG Release()s the rest -- so stale configs drop and identical ones are reused.
+ * this alive. The curve is outered to the transient package, not to this resource, so a stray strong
+ * reference on it can never pin the owning level. PCG marks all resources unused each (re)generation;
+ * the node re-marks the ones it still needs (by CRC), and PCG Release()s the rest -- so stale configs
+ * drop and identical ones are reused.
  * The CRC lives on the base (SetCrc/GetCrc); Config holds the source string to rule out CRC collisions.
  */
 UCLASS()
@@ -27,7 +29,7 @@ public:
 	virtual bool Release(bool bHardRelease, TSet<TSoftObjectPtr<AActor>>& OutActorsToDelete) override;
 	//~ End UPCGManagedResource interface
 
-	/** The transient curve, kept alive by this strong reference for the resource's lifetime. */
+	/** The transient-package curve, kept alive by this strong reference for the resource's lifetime. */
 	UPROPERTY(Transient)
 	TObjectPtr<UCurveFloat> Curve = nullptr;
 
