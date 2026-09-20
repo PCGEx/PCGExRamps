@@ -12,6 +12,7 @@
 #include "Metadata/PCGMetadata.h"
 #include "Metadata/PCGMetadataAttribute.h"
 #include "Metadata/PCGMetadataAttributeTpl.h"
+#include "UObject/Package.h"
 #include "Utils/PCGPreconfiguration.h"
 
 #include "PCGExManagedRampCurve.h"
